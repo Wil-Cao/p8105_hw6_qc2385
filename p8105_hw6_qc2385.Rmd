@@ -124,7 +124,7 @@ city_or_plot =
   geom_hline(yintercept = 1, linetype = "dashed") +
   coord_flip() +
   labs(
-    title = "Adjusted OR for solving homicides (male vs female victims)",
+    title = "Adjusted OR for solving homicides \n (male vs female victims)",
     x = "City",
     y = "Odds ratio (95% CI)"
   )
@@ -215,3 +215,118 @@ boot_df |>
 
 The 95% CI for r^2 is (0.894, 0.928), and the 95% CI for the slope product is (-0.0051, 0.0012). Therefore, the model fits the data well, and the product of the two slopes is not clearly different from 0, since its CI includes 0.
 
+
+## Problem 3
+
+Load and clean the birthweight data.
+
+```{r}
+bwt_df =
+  read_csv("data/birthweight.csv") |>
+  mutate(
+    babysex = factor(babysex, levels = c(1, 2), labels = c("male", "female")),
+    frace = factor(
+      frace,
+      levels = c(1, 2, 3, 4, 8, 9),
+      labels = c("White", "Black", "Asian", "Puerto Rican", "Other", "Unknown")),
+    mrace = factor(
+      mrace,
+      levels = c(1, 2, 3, 4, 8),
+      labels = c("White", "Black", "Asian", "Puerto Rican", "Other")),
+    malform = factor(malform, levels = c(0, 1), labels = c("absent", "present"))
+  )
+```
+
+Check missing data.
+
+```{r}
+bwt_df |>
+  summarize(across(everything(), \(x) sum(is.na(x)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "n_missing") |>
+  filter(n_missing > 0)
+```
+
+The data have `r nrow(bwt_df)` children and `r ncol(bwt_df)` variables, with no missing values. `babysex`, `frace`, `mrace` and `malform` are converted to factors; the rest are numeric. `pnumlbw` and `pnumsga` are 0 for all children, almost all mothers have `parity` = 0 (only 3 do not), and no mother is in the "Other" race group, so these variables carry little or no information.
+
+**Proposed model.** I chose predictors based on a hypothesized structure: factors known before delivery that affect fetal growth. These are gestational age (`gaweeks`), baby's sex (`babysex`), mother's race (`mrace`), smoking (`smoken`), pre-pregnancy BMI (`ppbmi`), and weight gain (`wtgain`). I did not include head circumference or length, since these are measured at birth along with weight. Father’s race is left out because it is highly correlated with mother’s race, and parity is left out because it has almost no variation.
+
+```{r}
+my_fit = lm(bwt ~ gaweeks + babysex + mrace + smoken + ppbmi + wtgain, data = bwt_df)
+
+my_fit |>
+  broom::tidy() |>
+  knitr::kable(digits = 3)
+```
+
+Residuals vs fitted values:
+
+```{r}
+resid_plot =
+  bwt_df |>
+  modelr::add_predictions(my_fit) |>
+  modelr::add_residuals(my_fit) |>
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(alpha = .3) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Residuals vs fitted values (proposed model)",
+    x = "Fitted birthweight (grams)",
+    y = "Residual"
+  )
+
+resid_plot
+
+ggsave("plots/resid_plot.png", resid_plot, width = 8, height = 5)
+```
+
+Residuals are mostly centered around 0 with no clear pattern for fitted values between about 2500 and 3800 grams. At low fitted values (below about 2500 grams) the residuals are more spread out, suggesting the model fits less well for small babies.
+
+Compare with the two other models using cross validation.
+
+```{r}
+cv_df =
+  crossv_mc(bwt_df, 100) |>
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+
+cv_df =
+  cv_df |>
+  mutate(
+    my_fit = map(train, \(df) lm(bwt ~ gaweeks + babysex + mrace + smoken + ppbmi + wtgain, data = df)),
+    main_fit = map(train, \(df) lm(bwt ~ blength + gaweeks, data = df)),
+    interaction_fit = map(train, \(df) lm(bwt ~ bhead * blength * babysex, data = df))
+  ) |>
+  mutate(
+    rmse_my = map2_dbl(my_fit, test, rmse),
+    rmse_main = map2_dbl(main_fit, test, rmse),
+    rmse_interaction = map2_dbl(interaction_fit, test, rmse)
+  )
+```
+
+```{r}
+cv_plot =
+  cv_df |>
+  select(starts_with("rmse_")) |>
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    names_prefix = "rmse_",
+    values_to = "rmse"
+  ) |>
+  mutate(model = fct_inorder(model)) |>
+  ggplot(aes(x = model, y = rmse)) +
+  geom_violin() +
+  labs(
+    title = "Cross-validated prediction error",
+    x = "Model",
+    y = "RMSE"
+  )
+
+cv_plot
+
+ggsave("plots/cv_plot.png", cv_plot, width = 8, height = 5)
+```
+
+The interaction model (head circumference, length, sex and all interactions) has the lowest RMSE (about 290), followed by the main effects model (length and gestational age, about 330). My proposed model has the highest RMSE (about 425) because it does not use body measurements at birth, which are strongly related to birthweight. Therefore, for prediction, the interaction model performs best.
