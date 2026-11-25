@@ -1,0 +1,12 @@
+---
+title: "p8105_hw6_qc2385"
+author: "Qixuan Cao"
+date: '`r format(Sys.time(), "%Y-%m-%d")`'
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
