@@ -6,7 +6,132 @@ output: github_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+
+knitr::opts_chunk$set(
+  fig.width = 6,
+  fig.asp = .6,
+  out.width = "90%"
+)
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
 ```
 
 
+```{r}
+library(tidyverse)
+library(p8105.datasets)
+library(modelr)
+
+set.seed(1)
+
+dir.create("plots", showWarnings = FALSE)
+```
+
+
+## Problem 1
+
+Import and clean the WP homicide data.
+
+```{r}
+homicide_df =
+  read_csv("data/homicide-data.csv", na = c("", "NA", "Unknown")) |>
+  mutate(
+    city_state = str_c(city, ", ", state),
+    resolved = as.numeric(disposition == "Closed by arrest"),
+    victim_age = as.numeric(victim_age)
+  ) |>
+  filter(
+    !(city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL")),
+    victim_race %in% c("White", "Black")
+  ) |>
+  mutate(victim_race = fct_relevel(victim_race, "White")) |>
+  select(city_state, resolved, victim_age, victim_race, victim_sex)
+```
+
+The cleaned dataset has `r nrow(homicide_df)` homicides in `r n_distinct(pull(homicide_df, city_state))` cities. Key variables are `city_state`, `resolved` (1 = closed by arrest), `victim_age`, `victim_race` (White / Black) and `victim_sex`.
+
+Fit the logistic regression for Baltimore.
+
+```{r}
+baltimore_fit =
+  homicide_df |>
+  filter(city_state == "Baltimore, MD") |>
+  glm(resolved ~ victim_age + victim_sex + victim_race, data = _, family = binomial())
+
+baltimore_or =
+  baltimore_fit |>
+  broom::tidy() |>
+  filter(term == "victim_sexMale") |>
+  mutate(
+    OR = exp(estimate),
+    ci_lower = exp(estimate - 1.96 * std.error),
+    ci_upper = exp(estimate + 1.96 * std.error)
+  ) |>
+  select(term, OR, ci_lower, ci_upper, p.value)
+
+baltimore_or |>
+  knitr::kable(digits = 3)
+```
+
+**Sex and solving homicides in Baltimore:**
+
+OR = `r round(pull(baltimore_or, OR), 3)`, 95% CI: (`r round(pull(baltimore_or, ci_lower), 3)`, `r round(pull(baltimore_or, ci_upper), 3)`), p < 0.001.
+
+Therefore, keeping age and race fixed, homicides with male victims have lower odds of being solved than those with female victims.
+
+Now fit the model for each city.
+
+```{r}
+city_or_df =
+  homicide_df |>
+  nest(data = -city_state) |>
+  mutate(
+    fits = map(data, \(df) glm(resolved ~ victim_age + victim_sex + victim_race, data = df, family = binomial())),
+    results = map(fits, broom::tidy)
+  ) |>
+  select(city_state, results) |>
+  unnest(results) |>
+  filter(term == "victim_sexMale") |>
+  mutate(
+    OR = exp(estimate),
+    ci_lower = exp(estimate - 1.96 * std.error),
+    ci_upper = exp(estimate + 1.96 * std.error)
+  ) |>
+  select(city_state, OR, ci_lower, ci_upper)
+
+city_or_df |>
+  knitr::kable(digits = 3)
+```
+
+Plot the ORs and CIs.
+
+```{r, fig.asp = 1.2}
+city_or_plot =
+  city_or_df |>
+  mutate(city_state = fct_reorder(city_state, OR)) |>
+  ggplot(aes(x = city_state, y = OR)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper)) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  labs(
+    title = "Adjusted OR for solving homicides (male vs female victims)",
+    x = "City",
+    y = "Odds ratio (95% CI)"
+  )
+
+city_or_plot
+
+ggsave("plots/city_or_plot.png", city_or_plot, width = 8, height = 10)
+```
+
+Most cities have OR below 1, so homicides with male victims are generally less likely to be solved than those with female victims. New York has the lowest OR (0.262), while Albuquerque has the highest (1.767). Many CIs cross 1, and cities with high ORs (e.g. Albuquerque, Stockton, Fresno) have wide CIs, likely due to small samples.
